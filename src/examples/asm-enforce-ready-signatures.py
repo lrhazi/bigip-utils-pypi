@@ -1,6 +1,7 @@
 import json
 from docopt import docopt
-from bigip_utils import *
+from bigip_utils.bigip import *
+from bigip_utils.logger import logger
 #
 # This script enforces all attack signatures that are ready to be enforced:
 #   https://support.f5.com/csp/article/K60640453?utm_source=f5support&utm_medium=RSS
