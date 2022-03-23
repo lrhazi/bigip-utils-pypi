@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='bigip-utils',
-    version='0.2',
+    version='0.1',
     license='MIT',
     author="Mohamed Lrhazi",
     author_email='lrhazi@gmail.com',

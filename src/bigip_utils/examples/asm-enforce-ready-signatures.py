@@ -1,8 +1,6 @@
 import json
 from docopt import docopt
-
-from bigip_utils.logger import logger
-from bigip_utils.bigip import *
+from bigip_utils import *
 #
 # This script enforces all attack signatures that are ready to be enforced:
 #   https://support.f5.com/csp/article/K60640453?utm_source=f5support&utm_medium=RSS
@@ -22,7 +20,7 @@ __doc__ = """
         -l LIST_FILE --list-file=LIST_FILE          CSV file with list of bigips. Format: hostname,ip,username,password
         -p POLICY_NAME --policy-name=POLICY_NAME    Name of a policy to act on. [default: all]
 """
-VERSION = "0.2"
+VERSION = "0.3"
 
 
 def enforce_ready_signatures(bigip, id):
