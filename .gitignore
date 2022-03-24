@@ -3,6 +3,7 @@ __pycache__/
 *$py.class
 
 .history/
+!.vscode/launch.json
 .vscode/
 bigips.csv
 .env
