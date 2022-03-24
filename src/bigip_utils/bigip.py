@@ -1,11 +1,12 @@
 import csv
 import json
 from pickle import BINFLOAT
+from socket import timeout
 import time
 import requests
 import os
 import re
-from logger import logger
+from bigip_utils.logger import logger
 
 import urllib3
 
@@ -80,7 +81,7 @@ class Downloader:
                 logger.warning(
                     f"{self.bigip.hostname}: Exception: {e}. Retrying...")
                 time.sleep(30)
-                self.bigip.reset()
+                # self.bigip.reset()
             if r:
                 logger.info(f"{self.bigip.hostname}: Download completed.")
                 break
@@ -220,7 +221,11 @@ class BigIP:
             return self.run_bash_command(f'mv /var/config/rest/downloads/{file_name} remote_dir')
 
     def download_file(self, filename, download_dir=None,overwrite=None):
-        d = Downloader(self, filename=filename, download_dir=download_dir,overwrite=overwrite)
+        try:
+            d = Downloader(self, filename=filename, download_dir=download_dir,overwrite=overwrite)
+        except Exception as e:
+            return False
+        return True
 
     def run_bash_command(self, command):
 
@@ -233,15 +238,14 @@ class BigIP:
             'utilCmdArgs': f"-c '{command}'"
         }
 
-        response = requests.post('https://' + self.ip + '/mgmt/tm/util/bash', json=payload, verify=self.verify_ssl,
-                                 headers=headers).json()
-        if 'commandResult' in response:
+        response = requests.post('https://' + self.ip + '/mgmt/tm/util/bash', json=payload, verify=self.verify_ssl,headers=headers)
+        response_j=response.json()
+        if 'commandResult' in response_j:
             logger.debug(f"{self.hostname}: Command: {command}")
-            logger.debug(
-                f"{self.hostname}: Result: {response['commandResult']}")
-            return re.sub('\n$', '', response['commandResult'])
+            logger.debug(f"{self.hostname}: Result: {response_j['commandResult']}")
+            return re.sub('\n$', '', response_j['commandResult'])
         else:
-            return None
+            return ""
 
     def test_remote_file(self, file_path):
         return self.run_bash_command(f'[ -f "{file_path}" ] && echo 1 || echo 0') == '1'
@@ -254,6 +258,21 @@ class BigIP:
             url_base = f'https://{self.ip}{uri}'
         self.session.headers.update({'Content-Type': 'application/json'})
         r = self.session.post(url_base, params=params,
+                              data=json.dumps(data), **kwargs)
+        if 'json' in r.headers['content-type'].lower():
+            json_data = r.json()
+        else:
+            json_data = r
+        return json_data
+
+    def patch(self, uri, params={}, data={}, **kwargs):
+        json_data = {}
+        if uri.startswith('https:'):
+            url_base = uri.replace('https://localhost', f"https://{self.ip}")
+        else:
+            url_base = f'https://{self.ip}{uri}'
+        self.session.headers.update({'Content-Type': 'application/json'})
+        r = self.session.patch(url_base, params=params,
                               data=json.dumps(data), **kwargs)
         if 'json' in r.headers['content-type'].lower():
             json_data = r.json()
@@ -284,14 +303,13 @@ def await_task(bigip, task_id, retries=10, sleep_time=10):
     task_status = False
     task_status = False
     for i in range(1, retries+1):
-        r = bigip.get(url_base)
-        if r.ok:
-            r_json = r.json()
-            task_status = r_json.get('status')
-            if task_status == 'COMPLETED':
-                return True
-            else:
-                logger.debug(f"{bigip.ip}: task status: {task_status}")
+        r_json = bigip.get(url_base)
+        task_status = r_json.get('status')
+        if task_status == 'COMPLETED':
+            logger.debug(f"{bigip.ip}: task status: {task_status}")
+            return True
+        else:
+            logger.debug(f"{bigip.ip}: task status: {task_status}")
         time.sleep(sleep_time)
     return False
 
@@ -344,27 +362,43 @@ def sync_devices(bigip, device_group=None):
         "command": "run",
         "options": [{"to-group": device_group}, ],
     }
-    r = bigip.post(url_base, data=json.dumps(data))
-    return r.ok
+    r = bigip.post(url_base, data=data)
+    return r
 
+def wait_for_file(bigip,filename, max_seconds=0):
+    time_counter = 0
+    while not bigip.test_remote_file(filename):
+        time.sleep(10)
+        time_counter += 10
+        if time_counter > max_seconds:
+            break
+    return bigip.test_remote_file(filename)
 
-def get_ucs(bigip, delete_remote_copy=False, overwrite=False):
+def get_ucs(bigip, delete_remote_copy=True, overwrite=False,download_dir=None):
     """
         Create a UCS file and downloads it. Optionally deletes the remote copy.
     """
     ucs_filename = f"{bigip.hostname}.ucs"
     ucs_filename_full = f"/shared/images/{ucs_filename}"
-    command = f"echo tmsh save /sys ucs {ucs_filename_full}"
-    logger.debug(f"{bigip.hostname}: Creating UCS file...")
+    log_file = f"{ucs_filename_full}.log"
+
+    command = f"ls -lh  {ucs_filename_full}*; rm -f {ucs_filename_full}*"
+    logger.debug(f"{bigip.hostname}: Deleting UCS file: {ucs_filename_full}")
     result = bigip.run_bash_command(command)
-    logger.debug(
-        f"{bigip.hostname}: Downloading UCS file: {ucs_filename_full}")
-    bigip.download_file(ucs_filename, download_dir="/tmp",overwrite=overwrite)
-    if delete_remote_copy:
-        command = f"rm {ucs_filename_full}"
-        logger.debug(
-            f"{bigip.hostname}: Deleting UCS file: {ucs_filename_full}")
-        result = bigip.run_bash_command(command)
+    
+    command = f"tmsh save /sys ucs {ucs_filename_full} > {log_file} 2>&1 </dev/null &"
+    logger.debug(f"{bigip.hostname}: Creating UCS file...")
+    bigip.run_bash_command(command)
+    if wait_for_file(bigip,ucs_filename_full, max_seconds=300):
+        logger.debug(f"{bigip.hostname}: Downloading UCS file: {ucs_filename_full}")
+        if bigip.download_file(ucs_filename, download_dir=download_dir,overwrite=overwrite):
+            if delete_remote_copy:
+                command = f"rm -f {ucs_filename_full} {log_file}"
+                logger.debug(f"{bigip.hostname}: Deleting UCS file: {ucs_filename_full}")
+                result3 = bigip.run_bash_command(command)
+                logger.debug(f"{bigip.hostname}: Delete command output: {result3}")
+            return True
+    return False
 
 
 def get_asm_policies(bigip):
@@ -401,7 +435,7 @@ def apply_asm_policy(bigip, policy_id):
     data = {"policyReference": {
         "link": f"https://{bigip.ip}/mgmt/tm/asm/policies/{policy_id}"}}
     task_status = False
-    r_json = bigip.post(url_base_asm, data=json.dumps(data))
+    r_json = bigip.post(url_base_asm, data=data)
     task_id = r_json.get('id')
     if task_id:
         task_status = await_task(
@@ -418,5 +452,5 @@ if __name__ == '__main__':
         logger.info(f"Active: {check_active(b)}")
         logger.info(f"ASM Sync Group: {get_asm_sync_group(b)}")
         logger.info(
-            f'Download file: {b.download_file(filename="passwd",download_dir="/tmp")}')
+            f'Download file: {b.download_file(filename="passwd",download_dir="downloads")}')
     logger.info("Done.")

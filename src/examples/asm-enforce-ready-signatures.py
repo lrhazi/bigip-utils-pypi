@@ -1,7 +1,14 @@
+import argparse
+from asyncio.log import logger
+import csv
+import datetime
+import getpass
 import json
+import os
+import time
 from docopt import docopt
-from bigip_utils.bigip import *
 from bigip_utils.logger import logger
+from bigip_utils.bigip import *
 #
 # This script enforces all attack signatures that are ready to be enforced:
 #   https://support.f5.com/csp/article/K60640453?utm_source=f5support&utm_medium=RSS
@@ -21,7 +28,7 @@ __doc__ = """
         -l LIST_FILE --list-file=LIST_FILE          CSV file with list of bigips. Format: hostname,ip,username,password
         -p POLICY_NAME --policy-name=POLICY_NAME    Name of a policy to act on. [default: all]
 """
-VERSION = "0.3"
+VERSION = "0.2"
 
 
 def enforce_ready_signatures(bigip, id):
@@ -31,7 +38,7 @@ def enforce_ready_signatures(bigip, id):
     }
     data = {'performStaging': 'false'}
     url_base_asm = f'https://{bigip.ip}/mgmt/tm/asm/policies/{id}/signatures'
-    json_data = bigip.patch(url_base_asm, params=params, data=json.dumps(data))
+    json_data = bigip.patch(url_base_asm, params=params, data=data)
     count = int(json_data.get('totalItems', 0))
     return count
 
@@ -52,7 +59,7 @@ def get_ready_signatures_count(bigip, id):
 
 def process_device(bigip, dry_run=True, policy=None, sync_device_group=None):
     policies_virtuals = get_virtuals_asm_policies(bigip)
-    policies=bigip.get_asm_policies()
+    policies=get_asm_policies(bigip)
     enforced_signatures_count = 0
     ready_signatures = {}
     for i in policies:
@@ -112,15 +119,14 @@ if __name__ == "__main__":
                 f'{b.hostname}: Unable to obtain authentication token')
             proceed = False
         if not check_active(b):
-            logger.warning(f'{b.hostname}:  Not active, skipping device.')
+            logger.info(f'{b.hostname}:  Not active, skipping device.')
             proceed = False
         enforced_signatures_count = 0
-        get_ucs(b,overwrite=True)
         if proceed:
             if backup_config and not dry_run:
-                get_ucs(b,overwrite=True)
-            enforced_signatures_count = process_device(
-                b, dry_run=dry_run, policy=policy_name, sync_device_group=device_group)
-        logger.info(
-            f"{b.hostname}: Finished. enforced signatures count: {enforced_signatures_count}")
+                if not get_ucs(b,overwrite=True, download_dir="downloads"):
+                    logger.error(f"{b.hostname}: Backup failed.")
+                    continue
+            enforced_signatures_count = process_device(b, dry_run=dry_run, policy=policy_name, sync_device_group=device_group)
+        logger.info(f"{b.hostname}: Finished. enforced signatures count: {enforced_signatures_count}")
     logger.info("Done.")
